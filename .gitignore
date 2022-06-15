@@ -1,0 +1,13 @@
+# Visual Studio, Visual Studio Code cache/options directory
+.vscode/
+.vs/
+
+# Build results
+[Bb]in/
+[Oo]bj/
+
+# User-specific files
+*.user
+
+# Temp files
+*.Development.json
