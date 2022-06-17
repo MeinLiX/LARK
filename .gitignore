@@ -9,6 +9,7 @@
 # User-specific files
 *.user
 .env
+*.db
 
 # Temp files
 *.Development.json
