@@ -63,11 +63,11 @@ internal class TelegramBot
             Console.WriteLine($"Receive message type: {message.Type} (chat type {message.Chat.Type}).");
             await (message.Chat.Type switch
             {
-                ChatType.Group => LarkTG.Source.BotOnReceived.BotOnReceived.BotOnGroupMessageReceived(botClient,message),
-                ChatType.Supergroup => LarkTG.Source.BotOnReceived.BotOnReceived.BotOnGroupMessageReceived(botClient,message),
-                ChatType.Channel => LarkTG.Source.BotOnReceived.BotOnReceived.BotOnGroupMessageReceived(botClient,message),
-                ChatType.Sender => LarkTG.Source.BotOnReceived.BotOnReceived.BotOnPersonMessageReceived(botClient,message),
-                ChatType.Private => LarkTG.Source.BotOnReceived.BotOnReceived.BotOnPersonMessageReceived(botClient,message)
+                ChatType.Group => LarkTG.Source.BotOnReceived.BotOnReceived.BotOnGroupMessageReceived(botClient, message),
+                ChatType.Supergroup => LarkTG.Source.BotOnReceived.BotOnReceived.BotOnGroupMessageReceived(botClient, message),
+                ChatType.Channel => LarkTG.Source.BotOnReceived.BotOnReceived.BotOnGroupMessageReceived(botClient, message),
+                ChatType.Sender => LarkTG.Source.BotOnReceived.BotOnReceived.BotOnPersonMessageReceived(botClient, message),
+                ChatType.Private => LarkTG.Source.BotOnReceived.BotOnReceived.BotOnPersonMessageReceived(botClient, message)
             });
         }
 
