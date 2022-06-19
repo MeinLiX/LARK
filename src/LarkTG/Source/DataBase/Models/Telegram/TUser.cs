@@ -8,9 +8,23 @@ public class TUser
     [Key]
     public long ID { get; set; }
 
-    //public int State { get; set; }
-    public string NickName { get; set; }
+    [Required]
+    public string FirstName { get; set; }
+
+    public string? Username { get; set; }
 
     //Navigations
     public List<EmojiGameSession> EmojiGameSessions { get; set; } = new();
+
+    public override string ToString()
+    {
+        if (Username is not null)
+        {
+            return $"{FirstName}[@{Username}]";
+        }
+        else
+        {
+            return $"{FirstName}";
+        }
+    }
 }

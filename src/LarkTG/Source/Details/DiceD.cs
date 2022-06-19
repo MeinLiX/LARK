@@ -20,6 +20,15 @@ public static class DiceD
                 prop => prop.Name
             );
 
+    public static Telegram.Bot.Types.Enums.Emoji GetTelegramDice(string diceName)=>diceName switch{
+        Constants.DICE => Telegram.Bot.Types.Enums.Emoji.Dice,
+        Constants.DARTS => Telegram.Bot.Types.Enums.Emoji.Darts,
+        Constants.BASKETBALL => Telegram.Bot.Types.Enums.Emoji.Basketball,
+        Constants.FOOTBALL => Telegram.Bot.Types.Enums.Emoji.Football,
+        Constants.SLOT_MACHINE => Telegram.Bot.Types.Enums.Emoji.SlotMachine,
+        Constants.BOWLING => Telegram.Bot.Types.Enums.Emoji.Bowling,
+    };
+
     public static string GetName(string diceEmoji) => DiceNames.FirstOrDefault(x => x.Key == diceEmoji).Value;
 
     public static string GetEmoji(string diceName) => DiceNames.FirstOrDefault(x => x.Value == diceName).Key;

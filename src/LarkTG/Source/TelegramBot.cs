@@ -1,6 +1,7 @@
 using Telegram.Bot.Extensions.Polling;
 using Telegram.Bot.Exceptions;
 using Telegram.Bot.Types.Enums;
+using LarkTG.Source.DataBase.Controller;
 
 namespace LarkTG.Source;
 
@@ -49,6 +50,7 @@ internal class TelegramBot
                 {
                     UpdateType.Message => BotOnMessageReceived(botClient, update.Message),
                     UpdateType.EditedMessage => BotOnMessageReceived(botClient, update.EditedMessage),
+                    UpdateType.CallbackQuery => BotOnCallbackReceived(botClient, update.CallbackQuery),
                     _ => UnknownUpdateHandlerAsync(botClient, update)
                 });
             }
@@ -60,16 +62,37 @@ internal class TelegramBot
 
         private async Task BotOnMessageReceived(ITelegramBotClient botClient, Message message)
         {
-            Console.WriteLine($"Receive message type: {message.Type} (chat type {message.Chat.Type}).");
+            MagicBox mb = new MagicBox(message);
+
             await (message.Chat.Type switch
             {
-                ChatType.Group => LarkTG.Source.BotOnReceived.BotOnReceived.BotOnGroupMessageReceived(botClient, message),
-                ChatType.Supergroup => LarkTG.Source.BotOnReceived.BotOnReceived.BotOnGroupMessageReceived(botClient, message),
-                ChatType.Channel => LarkTG.Source.BotOnReceived.BotOnReceived.BotOnGroupMessageReceived(botClient, message),
-                ChatType.Sender => LarkTG.Source.BotOnReceived.BotOnReceived.BotOnPersonMessageReceived(botClient, message),
-                ChatType.Private => LarkTG.Source.BotOnReceived.BotOnReceived.BotOnPersonMessageReceived(botClient, message)
+                ChatType.Group => LarkTG.Source.BotOn.BotOnReceived.BotOnGroupMessageReceived(botClient, message, mb),
+                ChatType.Supergroup => LarkTG.Source.BotOn.BotOnReceived.BotOnGroupMessageReceived(botClient, message, mb),
+                ChatType.Channel => Task.CompletedTask,
+                ChatType.Sender => LarkTG.Source.BotOn.BotOnReceived.BotOnPersonMessageReceived(botClient, message, mb),
+                ChatType.Private => LarkTG.Source.BotOn.BotOnReceived.BotOnPersonMessageReceived(botClient, message, mb)
             });
         }
+
+        private async Task BotOnCallbackReceived(ITelegramBotClient botClient, CallbackQuery callbackQuery)
+        {
+            if (callbackQuery.Message is null)
+            {
+                return;
+            }
+
+            MagicBox mb = new MagicBox(callbackQuery);
+
+            await (callbackQuery.Message.Chat.Type switch
+            {
+                ChatType.Group => LarkTG.Source.BotOn.BotOnReceived.BotOnGroupCallbackQueryReceived(botClient, callbackQuery, mb),
+                ChatType.Supergroup => LarkTG.Source.BotOn.BotOnReceived.BotOnGroupCallbackQueryReceived(botClient, callbackQuery, mb),
+                ChatType.Channel => Task.CompletedTask,
+                ChatType.Sender => LarkTG.Source.BotOn.BotOnReceived.BotOnPersonCallbackQueryReceived(botClient, callbackQuery, mb),
+                ChatType.Private => LarkTG.Source.BotOn.BotOnReceived.BotOnPersonCallbackQueryReceived(botClient, callbackQuery, mb)
+            });
+        }
+
 
         private static Task UnknownUpdateHandlerAsync(ITelegramBotClient botClient, Update update)
         {
