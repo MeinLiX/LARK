@@ -17,17 +17,21 @@ internal class EmojiGameSessionController
     public async Task<EmojiGameSession?> GetGameNotEndOrDefault(MagicBox mb) => await GetGameNotEndOrDefault(mb.Group);
 
     public async Task<EmojiGameSession?> GetGameNotEndOrDefault(TGroup? Group)
-    => await _mainCTX.EmojiGameSessions
-                        .Where(egs => Group.ID == egs.GroupOwner.ID &&
-                            (
-                                egs.SessionState != GameD.Constants.SessionState.End &&
-                                egs.SessionState != GameD.Constants.SessionState.ForceEnd
-                            ))
-                        .Include(egs => egs.GroupOwner)
-                        .Include(egs => egs.InGameUsers)
-                        .Include(egs => egs.Rounds)
-                        .ThenInclude(round => round.UsersScore)
-                        .FirstOrDefaultAsync();
+    => Group switch
+    {
+        null => null,
+        _ => await _mainCTX.EmojiGameSessions
+                            .Where(egs => Group.ID == egs.GroupOwner.ID &&
+                                (
+                                    egs.SessionState != GameD.Constants.SessionState.End &&
+                                    egs.SessionState != GameD.Constants.SessionState.ForceEnd
+                                ))
+                            .Include(egs => egs.GroupOwner)
+                            .Include(egs => egs.InGameUsers)
+                            .Include(egs => egs.Rounds)
+                            .ThenInclude(round => round.UsersScore)
+                            .FirstOrDefaultAsync()
+    };
 
     public async Task<EmojiGameSession> StartNewSessionAsync(MagicBox mb)
     {
@@ -160,7 +164,7 @@ internal class EmojiGameSessionController
     public async Task SetActiveRound(MagicBox mb, EmojiGameSessionRound round)
     {
         round.Active = true;
-        _mainCTX.SaveChangesAsync();
+        await _mainCTX.SaveChangesAsync();
     }
 
 }
