@@ -1,16 +1,39 @@
-﻿using LarkTG.Source;
+﻿using LarkTG.Source.Handlers;
+using LarkTG.Source.Validation;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
+using Serilog;
 
 dotenv.net.DotEnv.Load();
 
-#region required Environments
-string TELEGRAM_BOT_TOKEN = Environment.GetEnvironmentVariable("TELEGRAM_BOT_TOKEN") ?? throw new NullReferenceException("Telegram bot token");
-#endregion
+Log.Logger = new LoggerConfiguration()
+    .MinimumLevel.Information()
+    .WriteTo.Console()
+    .WriteTo.File("logs/bot-.txt", rollingInterval: RollingInterval.Day)
+    .CreateLogger();
 
-using CancellationTokenSource cts = new();
+var builder = Host.CreateApplicationBuilder(args);
 
-TelegramBot telegramBot = new(TELEGRAM_BOT_TOKEN, cts.Token);
+builder.Services.AddSingleton<ITelegramBotService, TelegramBotService>();
+builder.Services.AddScoped<IGameSessionService, GameSessionService>();
+builder.Services.AddScoped<IUserService, UserService>();
+builder.Services.AddScoped<IGroupService, GroupService>();
+builder.Services.AddScoped<UpdateHandler>();
+builder.Services.AddScoped<GameCommandHandler>();
+builder.Services.AddScoped<CallbackQueryHandler>();
+builder.Services.AddScoped<GameValidationService>();
+builder.Services.AddDbContext<MainContext>();
 
-await telegramBot.StartAsync();
+builder.Services.AddLogging(loggingBuilder => loggingBuilder.AddSerilog());
 
+var host = builder.Build();
+
+using var scope = host.Services.CreateScope();
+var botService = scope.ServiceProvider.GetRequiredService<ITelegramBotService>();
+
+await botService.StartAsync();
+
+Console.WriteLine("Bot started! Press Enter to stop...");
 Console.ReadLine();
-cts.Cancel();
+
+await botService.StopAsync();

@@ -1,4 +1,14 @@
 global using System;
+global using System.Text;
+global using System.ComponentModel.DataAnnotations;
+global using Microsoft.EntityFrameworkCore;
+global using Microsoft.Extensions.Logging;
 global using Telegram.Bot;
 global using Telegram.Bot.Types;
-global using Microsoft.EntityFrameworkCore;
+global using Telegram.Bot.Types.Enums;
+global using Telegram.Bot.Types.ReplyMarkups;
+global using LarkTG.Source.Models;
+global using LarkTG.Source.Services;
+global using LarkTG.Source.Database.Context;
+global using LarkTG.Source.Utils;
+global using LarkTG.Source.MessageBuilder;
