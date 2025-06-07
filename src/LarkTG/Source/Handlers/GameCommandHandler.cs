@@ -1,63 +1,123 @@
-﻿namespace LarkTG.Source.Handlers;
+﻿using LarkTG.Source.Validation;
+
+namespace LarkTG.Source.Handlers;
 
 public class GameCommandHandler
 {
     private readonly IGameSessionService _gameService;
+    private readonly GameValidationService _validationService;
     private readonly ILogger<GameCommandHandler> _logger;
 
-    public GameCommandHandler(IGameSessionService gameService, ILogger<GameCommandHandler> logger)
+    public GameCommandHandler(IGameSessionService gameService, GameValidationService validationService, ILogger<GameCommandHandler> logger)
     {
         _gameService = gameService;
+        _validationService = validationService;
         _logger = logger;
     }
 
     public async Task HandleStartGameCommand(ITelegramBotClient botClient, Message message,
-        long groupId, long userId)
+        long groupId, long userId, string[]? args = default)
     {
         try
         {
             var existingSession = await _gameService.GetActiveSessionAsync(groupId);
             if (existingSession != null)
             {
+                var sessionInfo = GameMessageBuilder.BuildSessionInfo(existingSession);
+                var kb = CreateMainSessionKeyboard(existingSession);
+
                 await botClient.SendMessage(
                     message.Chat.Id,
-                    "🎮 Game is already active! Use /join to join or /stop to end current game.",
+                    "🎮 **Game Already Active!**\n\n" + sessionInfo +
+                    "\n\nUse the buttons below to join or manage the game, or use `/stop` to end it.",
+                    parseMode: ParseMode.Markdown,
+                    replyMarkup: kb,
                     replyParameters: message.MessageId);
                 return;
             }
 
             var session = await _gameService.CreateSessionAsync(groupId, userId);
 
-            var keyboard = new InlineKeyboardMarkup(
-            [
-                [
-                    InlineKeyboardButton.WithCallbackData("🎯 Join Game", $"join_{session.ID}"),
-                    InlineKeyboardButton.WithCallbackData("🚪 Leave Game", $"leave_{session.ID}")
-                ],
-                [
-                    InlineKeyboardButton.WithCallbackData("⚙️ Settings", $"config_{session.ID}"),
-                    InlineKeyboardButton.WithCallbackData("▶️ Start Game", $"start_{session.ID}")
-                ],
-                [
-                    InlineKeyboardButton.WithCallbackData("❌ Cancel", $"cancel_{session.ID}")
-                ]
-            ]);
+            if (args?.Length > 0)
+            {
+                ApplyStartGameArguments(session, args);
+                await _gameService.ConfigureSessionAsync(session.ID, session.Configuration);
+            }
 
+            var keyboard = CreateMainSessionKeyboard(session);
             var messageText = GameMessageBuilder.BuildSessionInfo(session);
 
-            await botClient.SendMessage(
+            var sentMessage = await botClient.SendMessage(
                 message.Chat.Id,
-                messageText,
+                "🎮 **New Game Created!**\n\n" + messageText +
+                "\n\n**Next steps:**\n" +
+                "• Other players can join using the 'Join Game' button\n" +
+                "• Configure game settings using 'Settings'\n" +
+                "• Start when ready with 'Start Game'",
                 parseMode: ParseMode.Markdown,
                 replyMarkup: keyboard);
+
+            _logger.LogInformation("Game created by user {UserId} in group {GroupId}, session {SessionId}",
+                userId, groupId, session.ID);
+
+            _ = Task.Run(async () =>
+            {
+                await Task.Delay(5000);
+                try
+                {
+                    await botClient.DeleteMessage(message.Chat.Id, message.MessageId);
+                }
+                catch
+                {
+                }
+            });
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error handling start game command");
+            _logger.LogError(ex, "Error handling start game command in group {GroupId} by user {UserId}", groupId, userId);
             await botClient.SendMessage(
                 message.Chat.Id,
-                "❌ Error creating game. Please try again.",
+                "❌ **Error Creating Game**\n\n" +
+                "Failed to create the game. This might be due to:\n" +
+                "• Database connectivity issues\n" +
+                "• Insufficient permissions\n" +
+                "• Temporary server problems\n\n" +
+                "Please try again in a moment. If the problem persists, contact support.",
+                parseMode: ParseMode.Markdown,
                 replyParameters: message.MessageId);
+        }
+    }
+
+    private void ApplyStartGameArguments(GameSession session, string[] args)
+    {
+        foreach (var arg in args)
+        {
+            var argLower = arg.ToLower();
+
+            switch (argLower)
+            {
+                case "quick":
+                    session.Configuration.Mode = GameMode.Quick;
+                    break;
+                case "classic":
+                    session.Configuration.Mode = GameMode.Classic;
+                    break;
+                case "custom":
+                    session.Configuration.Mode = GameMode.Custom;
+                    break;
+                case "tournament":
+                    session.Configuration.Mode = GameMode.Tournament;
+                    break;
+                case "survival":
+                    session.Configuration.Mode = GameMode.Survival;
+                    break;
+                default:
+                    if (int.TryParse(arg, out var maxPlayers) && maxPlayers >= 2 && maxPlayers <= 50)
+                    {
+                        session.Configuration.MaxPlayers = maxPlayers;
+                    }
+                    break;
+            }
         }
     }
 
@@ -71,16 +131,21 @@ public class GameCommandHandler
             {
                 await botClient.SendMessage(
                     message.Chat.Id,
-                    "❌ No active game to stop.",
+                    "❌ **No Active Game**\n\n" +
+                    "There is no active game to stop in this group.\n" +
+                    "Use `/start_game` to create a new game.",
+                    parseMode: ParseMode.Markdown,
                     replyParameters: message.MessageId);
                 return;
             }
 
-            if (session.Creator.ID != userId)
+            var validation = _validationService.ValidateSessionAction(session, userId, "stop");
+            if (!validation.IsValid)
             {
                 await botClient.SendMessage(
                     message.Chat.Id,
-                    "❌ Only the game creator can stop the game.",
+                    $"❌ **Cannot Stop Game**\n\n{validation.Errors.First()}",
+                    parseMode: ParseMode.Markdown,
                     replyParameters: message.MessageId);
                 return;
             }
@@ -89,25 +154,52 @@ public class GameCommandHandler
 
             if (success)
             {
+                var finalMessage = "🛑 **Game Stopped**\n\n" +
+                    $"The game has been stopped by {message.From?.FirstName ?? "the creator"}.\n";
+
+                if (session.State == SessionState.Active && session.Scores.Any())
+                {
+                    var leaderboard = await _gameService.GetLeaderboardAsync(session.ID);
+                    if (leaderboard.Any())
+                    {
+                        finalMessage += "\n📊 **Final Standings:**\n";
+                        var topPlayers = leaderboard.Take(3).ToList();
+                        for (int i = 0; i < topPlayers.Count; i++)
+                        {
+                            var medal = i switch { 0 => "🥇", 1 => "🥈", 2 => "🥉", _ => "🏅" };
+                            finalMessage += $"{medal} {topPlayers[i].Player} - {topPlayers[i].TotalScore} pts\n";
+                        }
+                    }
+                }
+
+                finalMessage += "\nThanks for playing! Use `/start_game` to play again.";
+
                 await botClient.SendMessage(
                     message.Chat.Id,
-                    "🛑 Game has been stopped.",
-                    replyParameters: message.MessageId);
+                    finalMessage,
+                    parseMode: ParseMode.Markdown);
+
+                _logger.LogInformation("Game stopped by user {UserId} in group {GroupId}, session {SessionId}",
+                    userId, groupId, session.ID);
             }
             else
             {
                 await botClient.SendMessage(
                     message.Chat.Id,
-                    "❌ Failed to stop the game.",
+                    "❌ **Failed to Stop Game**\n\n" +
+                    "An error occurred while stopping the game. Please try again.",
+                    parseMode: ParseMode.Markdown,
                     replyParameters: message.MessageId);
             }
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error handling stop game command");
+            _logger.LogError(ex, "Error handling stop game command in group {GroupId} by user {UserId}", groupId, userId);
             await botClient.SendMessage(
                 message.Chat.Id,
-                "❌ Error stopping game.",
+                "❌ **Error Stopping Game**\n\n" +
+                "An unexpected error occurred. Please try again.",
+                parseMode: ParseMode.Markdown,
                 replyParameters: message.MessageId);
         }
     }
@@ -122,16 +214,21 @@ public class GameCommandHandler
             {
                 await botClient.SendMessage(
                     message.Chat.Id,
-                    "❌ No active game to join. Use /start_game to create one.",
+                    "❌ **No Active Game**\n\n" +
+                    "There is no active game to join in this group.\n" +
+                    "Use `/start_game` to create a new game.",
+                    parseMode: ParseMode.Markdown,
                     replyParameters: message.MessageId);
                 return;
             }
 
-            if (session.State != SessionState.Registration)
+            var validation = _validationService.ValidatePlayerJoin(session, userId);
+            if (!validation.IsValid)
             {
                 await botClient.SendMessage(
                     message.Chat.Id,
-                    "❌ Cannot join game at this stage.",
+                    $"❌ **Cannot Join Game**\n\n{validation.Errors.First()}",
+                    parseMode: ParseMode.Markdown,
                     replyParameters: message.MessageId);
                 return;
             }
@@ -142,23 +239,34 @@ public class GameCommandHandler
             {
                 await botClient.SendMessage(
                     message.Chat.Id,
-                    "✅ You joined the game!",
+                    $"✅ **{message.From?.FirstName ?? "Player"} Joined!**\n\n" +
+                    $"You successfully joined the game!\n" +
+                    $"Players in game: **{session.Players.Count + 1}/{session.Configuration.MaxPlayers}**\n\n" +
+                    "Wait for the game creator to start the game.",
+                    parseMode: ParseMode.Markdown,
                     replyParameters: message.MessageId);
+
+                _logger.LogInformation("User {UserId} joined game session {SessionId} in group {GroupId}",
+                    userId, session.ID, groupId);
             }
             else
             {
                 await botClient.SendMessage(
                     message.Chat.Id,
-                    "❌ Failed to join the game. You might already be in it or it's full.",
+                    "❌ **Failed to Join**\n\n" +
+                    "Unable to join the game. You might already be in it, or the game might be full.",
+                    parseMode: ParseMode.Markdown,
                     replyParameters: message.MessageId);
             }
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error handling join command");
+            _logger.LogError(ex, "Error handling join command in group {GroupId} by user {UserId}", groupId, userId);
             await botClient.SendMessage(
                 message.Chat.Id,
-                "❌ Error joining game.",
+                "❌ **Error Joining Game**\n\n" +
+                "An error occurred while joining. Please try again.",
+                parseMode: ParseMode.Markdown,
                 replyParameters: message.MessageId);
         }
     }
@@ -173,16 +281,20 @@ public class GameCommandHandler
             {
                 await botClient.SendMessage(
                     message.Chat.Id,
-                    "❌ No active game to leave.",
+                    "❌ **No Active Game**\n\n" +
+                    "There is no active game to leave.",
+                    parseMode: ParseMode.Markdown,
                     replyParameters: message.MessageId);
                 return;
             }
 
-            if (session.State != SessionState.Registration)
+            var validation = _validationService.ValidatePlayerLeave(session, userId);
+            if (!validation.IsValid)
             {
                 await botClient.SendMessage(
                     message.Chat.Id,
-                    "❌ Cannot leave game at this stage.",
+                    $"❌ **Cannot Leave Game**\n\n{validation.Errors.First()}",
+                    parseMode: ParseMode.Markdown,
                     replyParameters: message.MessageId);
                 return;
             }
@@ -191,25 +303,42 @@ public class GameCommandHandler
 
             if (success)
             {
+                var responseMessage = $"👋 **{message.From?.FirstName ?? "Player"} Left**\n\n" +
+                    "You have successfully left the game.";
+
+                var updatedSession = await _gameService.GetActiveSessionAsync(groupId);
+                if (updatedSession?.CreatorId != userId && updatedSession?.Creator != null)
+                {
+                    responseMessage += $"\n\n👑 **New game creator:** {updatedSession.Creator.FirstName}";
+                }
+
                 await botClient.SendMessage(
                     message.Chat.Id,
-                    "👋 You left the game.",
+                    responseMessage,
+                    parseMode: ParseMode.Markdown,
                     replyParameters: message.MessageId);
+
+                _logger.LogInformation("User {UserId} left game session {SessionId} in group {GroupId}",
+                    userId, session.ID, groupId);
             }
             else
             {
                 await botClient.SendMessage(
                     message.Chat.Id,
-                    "❌ Failed to leave the game.",
+                    "❌ **Failed to Leave**\n\n" +
+                    "Unable to leave the game. Please try again.",
+                    parseMode: ParseMode.Markdown,
                     replyParameters: message.MessageId);
             }
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error handling leave command");
+            _logger.LogError(ex, "Error handling leave command in group {GroupId} by user {UserId}", groupId, userId);
             await botClient.SendMessage(
                 message.Chat.Id,
-                "❌ Error leaving game.",
+                "❌ **Error Leaving Game**\n\n" +
+                "An error occurred while leaving. Please try again.",
+                parseMode: ParseMode.Markdown,
                 replyParameters: message.MessageId);
         }
     }
@@ -223,42 +352,80 @@ public class GameCommandHandler
             {
                 await botClient.SendMessage(
                     message.Chat.Id,
-                    "❌ No active game.",
+                    "❌ **No Active Game**\n\n" +
+                    "There is no active game in this group.\n" +
+                    "Use `/start_game` to create a new game.",
+                    parseMode: ParseMode.Markdown,
                     replyParameters: message.MessageId);
                 return;
             }
 
             string messageText;
+            InlineKeyboardMarkup? keyboard = null;
 
-            if (session.State == SessionState.Active)
+            switch (session.State)
             {
-                var activeRound = session.Rounds.FirstOrDefault(r => r.IsActive);
-                if (activeRound is not null)
-                {
-                    messageText = GameMessageBuilder.BuildRoundInfo(activeRound);
-                }
-                else
-                {
+                case SessionState.Registration:
+                    messageText = "📝 **Game Registration**\n\n" + GameMessageBuilder.BuildSessionInfo(session);
+                    keyboard = CreateMainSessionKeyboard(session);
+                    break;
+
+                case SessionState.Active:
+                    var activeRound = session.Rounds.FirstOrDefault(r => r.IsActive);
+                    if (activeRound is not null)
+                    {
+                        messageText = "🎮 **Game In Progress**\n\n" + GameMessageBuilder.BuildRoundInfo(activeRound);
+
+                        var completedRounds = session.Rounds.Count(r => r.IsCompleted);
+                        var totalRounds = session.Rounds.Count;
+                        messageText += $"\n\n📊 **Overall Progress:** {completedRounds}/{totalRounds} rounds completed";
+
+                        if (session.Scores.Any())
+                        {
+                            var leaderboard = session.Scores.OrderByDescending(s => s.TotalScore).Take(3).ToList();
+                            messageText += "\n\n🏆 **Current Leaders:**";
+                            for (int i = 0; i < leaderboard.Count; i++)
+                            {
+                                var medal = i switch { 0 => "🥇", 1 => "🥈", 2 => "🥉", _ => "🏅" };
+                                messageText += $"\n{medal} {leaderboard[i].Player} - {leaderboard[i].TotalScore} pts";
+                            }
+                        }
+                    }
+                    else
+                    {
+                        messageText = "🎮 **Game Active**\n\n" + GameMessageBuilder.BuildSessionInfo(session);
+                    }
+                    break;
+
+                case SessionState.Finished:
+                    messageText = "🏁 **Game Finished**\n\n";
+                    var finalLeaderboard = await _gameService.GetLeaderboardAsync(session.ID);
+                    if (finalLeaderboard.Any())
+                    {
+                        messageText += GameMessageBuilder.BuildLeaderboard(finalLeaderboard);
+                    }
+                    break;
+
+                default:
                     messageText = GameMessageBuilder.BuildSessionInfo(session);
-                }
-            }
-            else
-            {
-                messageText = GameMessageBuilder.BuildSessionInfo(session);
+                    break;
             }
 
             await botClient.SendMessage(
                 message.Chat.Id,
                 messageText,
                 parseMode: ParseMode.Markdown,
+                replyMarkup: keyboard,
                 replyParameters: message.MessageId);
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error handling game info command");
+            _logger.LogError(ex, "Error handling game info command in group {GroupId}", groupId);
             await botClient.SendMessage(
                 message.Chat.Id,
-                "❌ Error getting game information.",
+                "❌ **Error Getting Game Info**\n\n" +
+                "Unable to retrieve game information. Please try again.",
+                parseMode: ParseMode.Markdown,
                 replyParameters: message.MessageId);
         }
     }
@@ -271,58 +438,102 @@ public class GameCommandHandler
             if (session is null) return;
 
             var activeRound = session.Rounds.FirstOrDefault(r => r.IsActive);
+            if (activeRound is null) return;
 
-            if (activeRound is not null)
+            var playerResult = activeRound.Results.FirstOrDefault(r => r.PlayerId == message.From!.Id);
+            var scoreValue = message.Dice!.Value;
+            var scoreDisplay = DiceHelper.GetScoreDisplay(activeRound.DiceEmoji, scoreValue);
+
+            if (activeRound.Results.All(r => r.HasPlayed))
             {
-                if (activeRound.Results.All(r => r.HasPlayed))
+                var roundResultMessage = $"🎯 **You scored {scoreValue}!** {scoreDisplay}\n\n";
+
+                var sortedResults = activeRound.Results
+                    .OrderByDescending(r => r.Score)
+                    .ToList();
+
+                var maxScore = sortedResults.First().Score!.Value;
+                var winners = sortedResults.Where(r => r.Score == maxScore).ToList();
+
+                if (winners.Count == 1)
                 {
-                    var roundInfo = GameMessageBuilder.BuildRoundInfo(activeRound);
-
-                    await botClient.SendMessage(
-                        message.Chat.Id,
-                        $"🎯 You scored {message.Dice!.Value}!\n\n" + roundInfo,
-                        parseMode: ParseMode.Markdown);
-
-                    var nextRound = session.Rounds.FirstOrDefault(r => r.IsActive && r.ID != activeRound.ID);
-                    if (nextRound is not null)
-                    {
-                        await Task.Delay(2000);
-
-                        var nextRoundInfo = GameMessageBuilder.BuildRoundInfo(nextRound);
-                        var nextRoundMessage = await botClient.SendMessage(
-                            message.Chat.Id,
-                            nextRoundInfo,
-                            parseMode: ParseMode.Markdown);
-
-                        await botClient.SendDice(
-                            message.Chat.Id,
-                            DiceHelper.GetTelegramDiceEmoji(nextRound.DiceEmoji),
-                            replyParameters: nextRoundMessage.MessageId);
-                    }
-                    else if (session.State == SessionState.Finished)
-                    {
-                        await Task.Delay(2000);
-                        var leaderboard = await _gameService.GetLeaderboardAsync(session.ID);
-                        var finalResults = GameMessageBuilder.BuildLeaderboard(leaderboard);
-
-                        await botClient.SendMessage(
-                            message.Chat.Id,
-                            finalResults,
-                            parseMode: ParseMode.Markdown);
-                    }
+                    roundResultMessage += $"🏆 **Round {activeRound.RoundNumber} Winner:** {winners.First().Player}\n";
                 }
                 else
                 {
+                    roundResultMessage += $"🤝 **Round {activeRound.RoundNumber} Tie:** {winners.Count} players tied!\n";
+                }
+
+                roundResultMessage += "\n📋 **Round Results:**\n";
+                for (int i = 0; i < Math.Min(sortedResults.Count, 5); i++)
+                {
+                    var result = sortedResults[i];
+                    var medal = i switch { 0 => "🥇", 1 => "🥈", 2 => "🥉", _ => "  " };
+                    var isWinner = winners.Contains(result) ? " 🏆" : "";
+                    roundResultMessage += $"{medal} {result.Player} - **{result.Score}**{isWinner}\n";
+                }
+
+                if (sortedResults.Count > 5)
+                {
+                    roundResultMessage += $"... and {sortedResults.Count - 5} more players\n";
+                }
+
+                await botClient.SendMessage(
+                    message.Chat.Id,
+                    roundResultMessage,
+                    parseMode: ParseMode.Markdown);
+
+                var nextRound = session.Rounds.FirstOrDefault(r => r.IsActive && r.ID != activeRound.ID);
+                if (nextRound is not null)
+                {
+                    await Task.Delay(3000);
+
+                    var nextRoundInfo = GameMessageBuilder.BuildRoundInfo(nextRound);
+                    var nextRoundMessage = await botClient.SendMessage(
+                        message.Chat.Id,
+                        "🎲 **Next Round Starting!**\n\n" + nextRoundInfo,
+                        parseMode: ParseMode.Markdown);
+
+                    await Task.Delay(1000);
+
+                    await botClient.SendDice(
+                        message.Chat.Id,
+                        DiceHelper.GetTelegramDiceEmoji(nextRound.DiceEmoji),
+                        replyParameters: nextRoundMessage.MessageId);
+                }
+                else if (session.State == SessionState.Finished)
+                {
+                    await Task.Delay(3000);
+
+                    var leaderboard = await _gameService.GetLeaderboardAsync(session.ID);
+                    var finalResults = GameMessageBuilder.BuildLeaderboard(leaderboard);
+
                     await botClient.SendMessage(
                         message.Chat.Id,
-                        $"🎯 You scored {message.Dice!.Value}! {DiceHelper.GetScoreDisplay(activeRound.DiceEmoji, message.Dice.Value)}",
-                        replyParameters: message.MessageId);
+                        "🏁 **GAME OVER!**\n\n" + finalResults,
+                        parseMode: ParseMode.Markdown);
+
+                    _logger.LogInformation("Game completed in group {GroupId}, session {SessionId}",
+                        message.Chat.Id, session.ID);
                 }
+            }
+            else
+            {
+                var waitingCount = activeRound.Results.Count(r => !r.HasPlayed);
+                var personalMessage = $"🎯 **You scored {scoreValue}!** {scoreDisplay}\n\n" +
+                    $"⏳ Waiting for {waitingCount} more player(s) to play...";
+
+                await botClient.SendMessage(
+                    message.Chat.Id,
+                    personalMessage,
+                    parseMode: ParseMode.Markdown,
+                    replyParameters: message.MessageId);
             }
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error handling successful play");
+            _logger.LogError(ex, "Error handling successful play for user {UserId} in group {GroupId}",
+                message.From?.Id, message.Chat.Id);
         }
     }
 
@@ -336,62 +547,77 @@ public class GameCommandHandler
             {
                 await botClient.SendMessage(
                     message.Chat.Id,
-                    "❌ No active round.",
+                    "❌ **No Active Round**\n\n" +
+                    "There is currently no active round to play.\n" +
+                    "Wait for the game to start or the next round to begin.",
+                    parseMode: ParseMode.Markdown,
                     replyParameters: message.MessageId);
                 return;
             }
 
-            if (activeRound.DiceEmoji != message.Dice!.Emoji)
+            var validation = _validationService.ValidateDicePlay(session, activeRound, message.From!.Id, message.Dice!.Emoji);
+
+            if (!validation.IsValid)
             {
-                await botClient.SendMessage(
+                var errorMessage = $"❌ **Invalid Play**\n\n{validation.Errors.First()}";
+
+                if (activeRound.DiceEmoji != message.Dice.Emoji)
+                {
+                    errorMessage += $"\n\n🎯 **Current round:** {activeRound.DiceEmoji} {DiceHelper.GetDiceName(activeRound.DiceEmoji)}";
+                    errorMessage += $"\n📱 **Your dice:** {message.Dice.Emoji}";
+                }
+
+                var errorMsg = await botClient.SendMessage(
                     message.Chat.Id,
-                    $"❌ Wrong dice! Current round: {activeRound.DiceEmoji} {DiceHelper.GetDiceName(activeRound.DiceEmoji)}",
+                    errorMessage,
+                    parseMode: ParseMode.Markdown,
                     replyParameters: message.MessageId);
 
-                await Task.Run(async () =>
+                _ = Task.Run(async () =>
                 {
-                    await Task.Delay(3000);
+                    await Task.Delay(5000);
                     try
                     {
+                        await botClient.DeleteMessage(message.Chat.Id, errorMsg.MessageId);
                         await botClient.DeleteMessage(message.Chat.Id, message.MessageId);
                     }
-                    catch { }
-                });
-                return;
-            }
-
-            var playerResult = activeRound.Results.FirstOrDefault(r => r.PlayerId == message.From!.Id);
-            if (playerResult?.HasPlayed == true)
-            {
-                await botClient.SendMessage(
-                    message.Chat.Id,
-                    "❌ You already played this round!",
-                    replyParameters: message.MessageId);
-
-                await Task.Run(async () =>
-                {
-                    await Task.Delay(3000);
-                    try
+                    catch
                     {
-                        await botClient.DeleteMessage(message.Chat.Id, message.MessageId);
                     }
-                    catch { }
                 });
-                return;
-            }
-
-            if (playerResult is null)
-            {
-                await botClient.SendMessage(
-                    message.Chat.Id,
-                    "❌ You're not registered in this game!",
-                    replyParameters: message.MessageId);
-                return;
             }
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error handling failed play");
+            _logger.LogError(ex, "Error handling failed play for user {UserId} in group {GroupId}",
+                message.From?.Id, message.Chat.Id);
         }
+    }
+
+    private InlineKeyboardMarkup CreateMainSessionKeyboard(GameSession session)
+    {
+        var buttons = new List<InlineKeyboardButton[]>();
+
+        if (session.State == SessionState.Registration)
+        {
+            buttons.Add(
+            [
+                InlineKeyboardButton.WithCallbackData("🎯 Join Game", $"join_{session.ID}"),
+                InlineKeyboardButton.WithCallbackData("🚪 Leave Game", $"leave_{session.ID}")
+            ]);
+
+            buttons.Add(
+            [
+                InlineKeyboardButton.WithCallbackData("⚙️ Settings", $"config_{session.ID}"),
+                InlineKeyboardButton.WithCallbackData("▶️ Start Game", $"start_{session.ID}")
+            ]);
+
+            buttons.Add(
+            [
+                InlineKeyboardButton.WithCallbackData("❌ Cancel", $"cancel_{session.ID}")
+            ]);
+        }
+
+        return new InlineKeyboardMarkup(buttons);
     }
 }

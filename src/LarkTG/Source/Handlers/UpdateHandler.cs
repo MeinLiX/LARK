@@ -28,6 +28,8 @@ public class UpdateHandler
     public async Task HandleUpdateAsync(ITelegramBotClient botClient, Update update,
         CancellationToken cancellationToken)
     {
+        await EnsureUserRegistrationAsync(update);
+
         var handler = update.Type switch
         {
             UpdateType.Message => HandleMessageAsync(botClient, update.Message!),
@@ -39,14 +41,58 @@ public class UpdateHandler
         await handler;
     }
 
+    private async Task<TUser?> EnsureUserRegistrationAsync(Update update)
+    {
+        User? telegramUser = update.Type switch
+        {
+            UpdateType.Message => update.Message?.From,
+            UpdateType.CallbackQuery => update.CallbackQuery?.From,
+            UpdateType.MyChatMember => update.MyChatMember?.From,
+            UpdateType.ChatMember => update.ChatMember?.From,
+            UpdateType.InlineQuery => update.InlineQuery?.From,
+            UpdateType.ChosenInlineResult => update.ChosenInlineResult?.From,
+            UpdateType.ChannelPost => update.ChannelPost?.From,
+            UpdateType.EditedChannelPost => update.EditedChannelPost?.From,
+            UpdateType.EditedMessage => update.EditedMessage?.From,
+            _ => null
+        };
+
+        if (telegramUser == null) return null;
+
+        try
+        {
+            var user = await _userService.GetOrCreateUserAsync(telegramUser);
+            if (user == null)
+            {
+                _logger.LogWarning("Failed to register user {UserId} ({FirstName})",
+                    telegramUser.Id, telegramUser.FirstName);
+            }
+            else
+            {
+                _logger.LogDebug("User {UserId} ({FirstName}) registered/updated",
+                    user.ID, user.FirstName);
+            }
+            return user;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error registering user {UserId}", telegramUser.Id);
+            return null;
+        }
+    }
+
     private async Task HandleMessageAsync(ITelegramBotClient botClient, Message message)
     {
         if (message.From is null) return;
 
-        var user = await _userService.GetOrCreateUserAsync(message.From);
+        var user = await _userService.GetUserAsync(message.From.Id);
         if (user is null)
         {
-            _logger.LogWarning("Failed to create user {UserId}", message.From.Id);
+            _logger.LogWarning("User {UserId} not found after registration attempt", message.From.Id);
+            await botClient.SendMessage(
+                message.Chat.Id,
+                "❌ Failed to register user. Please try again.",
+                replyParameters: message.MessageId);
             return;
         }
 
@@ -56,6 +102,10 @@ public class UpdateHandler
             if (group is null)
             {
                 _logger.LogWarning("Failed to create group {ChatId}", message.Chat.Id);
+                await botClient.SendMessage(
+                    message.Chat.Id,
+                    "❌ Failed to register group. Please try again.",
+                    replyParameters: message.MessageId);
                 return;
             }
 
@@ -72,12 +122,14 @@ public class UpdateHandler
     {
         if (message.Text?.StartsWith('/') == true)
         {
-            var command = message.Text.Split(' ')[0].ToLower();
+            var commandParts = message.Text.Split(' ');
+            var command = commandParts[0].ToLower();
+            var args = commandParts.Length > 1 ? commandParts[1..] : Array.Empty<string>();
 
             switch (command)
             {
                 case "/start_game" or "/go":
-                    await _gameCommandHandler.HandleStartGameCommand(botClient, message, groupId, userId);
+                    await _gameCommandHandler.HandleStartGameCommand(botClient, message, groupId, userId, args);
                     break;
 
                 case "/stop_game" or "/stop":
@@ -102,6 +154,20 @@ public class UpdateHandler
 
                 case "/dices":
                     await HandleDicesCommand(botClient, message);
+                    break;
+
+                case "/settings" or "/config":
+                    await HandleSettingsCommand(botClient, message, groupId, userId);
+                    break;
+
+                default:
+                    if (command.StartsWith('/'))
+                    {
+                        await botClient.SendMessage(
+                            message.Chat.Id,
+                            "❓ Unknown command. Use /help to see available commands.",
+                            replyParameters: message.MessageId);
+                    }
                     break;
             }
         }
@@ -146,26 +212,110 @@ public class UpdateHandler
         }
     }
 
+    private async Task HandleSettingsCommand(ITelegramBotClient botClient, Message message, long groupId, long userId)
+    {
+        var session = await _gameService.GetActiveSessionAsync(groupId);
+        if (session is null)
+        {
+            await botClient.SendMessage(
+                message.Chat.Id,
+                "❌ No active game. Use /start_game to create one.",
+                replyParameters: message.MessageId);
+            return;
+        }
+
+        if (session.CreatorId != userId)
+        {
+            await botClient.SendMessage(
+                message.Chat.Id,
+                "❌ Only the game creator can access settings.",
+                replyParameters: message.MessageId);
+            return;
+        }
+
+        if (session.State != SessionState.Registration)
+        {
+            await botClient.SendMessage(
+                message.Chat.Id,
+                "❌ Settings can only be changed during registration phase.",
+                replyParameters: message.MessageId);
+            return;
+        }
+
+        var keyboard = CreateAdvancedConfigurationKeyboard(session.ID);
+        var messageText = GameMessageBuilder.BuildGameConfigurationSummary(session.Configuration);
+
+        await botClient.SendMessage(
+            message.Chat.Id,
+            messageText,
+            parseMode: ParseMode.Markdown,
+            replyMarkup: keyboard,
+            replyParameters: message.MessageId);
+    }
+
     private async Task HandlePrivateMessageAsync(ITelegramBotClient botClient, Message message, long userId)
+    {
+        if (message.Text?.StartsWith('/') == true)
+        {
+            var command = message.Text.Split(' ')[0].ToLower();
+
+            switch (command)
+            {
+                case "/start":
+                    await HandleStartCommand(botClient, message);
+                    break;
+                case "/help":
+                    await HandleHelpCommand(botClient, message);
+                    break;
+                case "/dices":
+                    await HandleDicesCommand(botClient, message);
+                    break;
+                default:
+                    await HandleStartCommand(botClient, message);
+                    break;
+            }
+        }
+        else
+        {
+            await HandleStartCommand(botClient, message);
+        }
+    }
+
+    private async Task HandleStartCommand(ITelegramBotClient botClient, Message message)
     {
         await botClient.SendMessage(
             message.Chat.Id,
-            "👋 Hello! I'm a dice game bot for group chats.\n\n" +
-            "Add me to a group and use /start_game to begin playing!\n\n" +
+            "🎮 **Welcome to Dice Game Bot!**\n\n" +
+            "I help organize dice games in group chats.\n\n" +
+            "**How to get started:**\n" +
+            "1. Add me to your group chat\n" +
+            "2. Use `/start_game` to create a new game\n" +
+            "3. Configure game settings\n" +
+            "4. Invite friends to join\n" +
+            "5. Start playing!\n\n" +
             "**Available commands:**\n" +
             "🎮 `/start_game` - Start new game\n" +
             "🛑 `/stop_game` - Stop current game\n" +
             "🎯 `/join` - Join game\n" +
             "🚪 `/leave` - Leave game\n" +
             "ℹ️ `/info` - Game information\n" +
+            "⚙️ `/settings` - Game settings (creator only)\n" +
             "🎲 `/dices` - Available dices\n" +
-            "❓ `/help` - Help",
+            "❓ `/help` - Help\n\n" +
+            "Add me to a group to start playing!",
             parseMode: ParseMode.Markdown);
     }
 
     private async Task HandleCallbackQueryAsync(ITelegramBotClient botClient, CallbackQuery callbackQuery)
     {
         if (callbackQuery.From is null || callbackQuery.Data is null) return;
+
+        var user = await _userService.GetUserAsync(callbackQuery.From.Id);
+        if (user is null)
+        {
+            await botClient.AnswerCallbackQuery(callbackQuery.Id, "❌ User registration failed");
+            return;
+        }
 
         await _callbackHandler.HandleCallbackQueryAsync(botClient, callbackQuery);
     }
@@ -175,47 +325,82 @@ public class UpdateHandler
         if (myChatMember.NewChatMember.Status == ChatMemberStatus.Member ||
             myChatMember.NewChatMember.Status == ChatMemberStatus.Administrator)
         {
+            if (myChatMember.Chat.Type == ChatType.Group || myChatMember.Chat.Type == ChatType.Supergroup)
+            {
+                await _groupService.GetOrCreateGroupAsync(myChatMember.Chat);
+            }
+
             await botClient.SendMessage(
                 myChatMember.Chat.Id,
-                "👋 Hello! Thanks for adding me to the group!\n\n" +
-                "🎮 Use `/start_game` to begin playing dice games!\n" +
-                "❓ `/help` for more information");
+                "🎮 **Welcome to Dice Game Bot!**\n\n" +
+                "Thanks for adding me to your group!\n\n" +
+                "**Quick start:**\n" +
+                "• Use `/start_game` to begin playing\n" +
+                "• Use `/help` for more information\n" +
+                "• Use `/dices` to see available dice types\n\n" +
+                "Let's play! 🎲",
+                parseMode: ParseMode.Markdown);
+        }
+        else if (myChatMember.NewChatMember.Status == ChatMemberStatus.Left ||
+                 myChatMember.NewChatMember.Status == ChatMemberStatus.Kicked)
+        {
+            _logger.LogInformation("Bot removed from chat {ChatId} ({ChatTitle})",
+                myChatMember.Chat.Id, myChatMember.Chat.Title);
+
+            var session = await _gameService.GetActiveSessionAsync(myChatMember.Chat.Id);
+            if (session != null)
+            {
+                await _gameService.CancelSessionAsync(session.ID);
+                _logger.LogInformation("Cancelled game session {SessionId} due to bot removal", session.ID);
+            }
         }
     }
 
     private async Task HandleHelpCommand(ITelegramBotClient botClient, Message message)
     {
         var helpText = """
-            🎮 **Dice Game Bot**
+            🎮 **Dice Game Bot Help**
             
-            **Commands:**
+            **Game Commands:**
             🎯 `/start_game` or `/go` - Start new game
             🛑 `/stop_game` or `/stop` - Stop current game
-            🎯 `/join` - Join game
+            🎯 `/join` - Join active game
             🚪 `/leave` - Leave game
-            ℹ️ `/info` - Game information
-            🎲 `/dices` - Available dices
-            ❓ `/help` - This help
+            ℹ️ `/info` - Current game information
+            ⚙️ `/settings` - Advanced game settings (creator only)
+            🎲 `/dices` - Show available dice types
+            ❓ `/help` - Show this help message
             
             **How to play:**
-            1. Create game with `/start_game`
-            2. Configure game settings
-            3. Other players join with "Join" button
-            4. Start game with "Start Game" button
-            5. Roll dices when it's your turn!
+            1. **Start a game** with `/start_game`
+            2. **Configure settings** using buttons or `/settings`
+            3. **Wait for players** to join using "Join" button
+            4. **Start the game** with "Start Game" button
+            5. **Roll dice** when prompted (send the correct dice emoji)
+            6. **Win by scoring highest** in each round!
             
-            **Game modes:**
-            🎲 **Classic** - All dices in sequence
-            ⚡ **Quick** - Only one random dice
-            🔧 **Custom** - Choose which dices to play
+            **Game Modes:**
+            🎲 **Classic** - Play all available dice types in sequence
+            ⚡ **Quick** - Play only one random dice type
+            🔧 **Custom** - Choose specific dice types to play
+            🏆 **Tournament** - Elimination-style competition
+            💀 **Survival** - Last player standing wins
             
-            **Dices and max scores:**
-            🎲 Dice - 6 points
-            🎯 Darts - 6 points
+            **Dice Types & Max Scores:**
+            🎲 Classic Dice - 6 points
+            🎯 Darts - 6 points  
             🏀 Basketball - 5 points
             ⚽ Football - 5 points
             🎳 Bowling - 6 points
             🎰 Slot Machine - 64 points
+            
+            **Tips:**
+            • Higher scores are always better
+            • Some dice have different maximum scores
+            • Creator can configure game settings before starting
+            • Games have automatic time limits for fairness
+            
+            Have fun playing! 🎉
             """;
 
         await botClient.SendMessage(
@@ -227,33 +412,66 @@ public class UpdateHandler
     private async Task HandleDicesCommand(ITelegramBotClient botClient, Message message)
     {
         var dicesText = """
-            🎲 **Available Dices**
+            🎲 **Available Dice Types**
             
-            🎲 **Dice** - Max: 6 points
-            Classic six-sided dice
+            🎲 **Classic Dice** - Max: 6 points
+            Traditional six-sided dice - the classic choice!
             
             🎯 **Darts** - Max: 6 points
-            Hit the bullseye!
+            Aim for the bullseye! Precision matters.
             
             🏀 **Basketball** - Max: 5 points
-            Score a basket!
+            Shoot for the hoop! Score that perfect shot.
             
-            ⚽ **Football** - Max: 5 points
-            Goal!
+            ⚽ **Football/Soccer** - Max: 5 points
+            Kick it into the goal! Show your skills.
             
             🎳 **Bowling** - Max: 6 points
-            Strike!
+            Roll for a strike! Knock down all the pins.
             
             🎰 **Slot Machine** - Max: 64 points
-            Jackpot!
+            Hit the jackpot! The highest scoring dice.
             
-            Use `/start_game` to begin playing!
+            **Scoring System:**
+            • 🏆 Perfect Score (100%) - Maximum points possible
+            • 🥇 Excellent (90%+) - Almost perfect!
+            • 🥈 Very Good (75%+) - Great job!
+            • 🥉 Not Bad (50%+) - Decent score
+            • 😐 Could be Better (25%+) - Room for improvement
+            • 😢 Unlucky (<25%) - Better luck next time!
+            
+            Use `/start_game` to begin playing with these dice!
             """;
 
         await botClient.SendMessage(
             message.Chat.Id,
             dicesText,
             parseMode: ParseMode.Markdown);
+    }
+
+    private InlineKeyboardMarkup CreateAdvancedConfigurationKeyboard(Guid sessionId)
+    {
+        return new InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton.WithCallbackData("🎯 Game Mode", $"config_mode_{sessionId}"),
+                InlineKeyboardButton.WithCallbackData("🎲 Dice Types", $"config_dices_{sessionId}")
+            ],
+            [
+                InlineKeyboardButton.WithCallbackData("🔄 Rounds", $"config_rounds_{sessionId}"),
+                InlineKeyboardButton.WithCallbackData("👥 Max Players", $"config_players_{sessionId}")
+            ],
+            [
+                InlineKeyboardButton.WithCallbackData("⏱️ Time Limit", $"config_time_{sessionId}"),
+                InlineKeyboardButton.WithCallbackData("🔁 Rerolls", $"config_rerolls_{sessionId}")
+            ],
+            [
+                InlineKeyboardButton.WithCallbackData("📋 Current Settings", $"config_summary_{sessionId}")
+            ],
+            [
+                InlineKeyboardButton.WithCallbackData("◀️ Back to Game", $"back_main_{sessionId}")
+            ]
+        ]);
     }
 
     private Task HandleUnknownUpdateAsync(Update update)
