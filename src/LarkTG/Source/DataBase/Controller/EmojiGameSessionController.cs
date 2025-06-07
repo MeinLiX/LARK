@@ -37,7 +37,7 @@ internal class EmojiGameSessionController
     {
         if (mb.ActiveSession is not null || await GetGameNotEndOrDefault(mb) is not null)
         {
-            throw new GameException("Not support multi sessions game.");
+            throw new GameException("Not support multi sessions game in one chat.");
         }
 
         var egs = new EmojiGameSession(mb.Group);
@@ -89,12 +89,7 @@ internal class EmojiGameSessionController
 
     public async Task<bool> UserPlayRoundAsyc(MagicBox mb, EmojiGameSessionRound activeRound, Dice dice)
     {
-        var activeUser = activeRound.UsersScore.FirstOrDefault(u => u.TUserID == mb.User.ID);
-        if (activeUser is null)
-        {
-            throw new NullReferenceException("Dude, you not registred in game!");
-        }
-
+        var activeUser = activeRound.UsersScore.FirstOrDefault(u => u.TUserID == mb.User?.ID) ?? throw new NullReferenceException("Dude, you not registred in game!");
         if (activeUser.Played)
         {
             return false;

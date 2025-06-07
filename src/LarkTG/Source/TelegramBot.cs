@@ -1,7 +1,7 @@
-using Telegram.Bot.Extensions.Polling;
 using Telegram.Bot.Exceptions;
 using Telegram.Bot.Types.Enums;
 using LarkTG.Source.DataBase.Controller;
+using Telegram.Bot.Polling;
 
 namespace LarkTG.Source;
 
@@ -20,7 +20,7 @@ internal class TelegramBot
     public async Task StartAsync()
     {
         Bot = new TelegramBotClient(TELEGRAM_BOT_TOKEN);
-        User me = await Bot.GetMeAsync();
+        User me = await Bot.GetMe();
 
         Handler handler = new();
         Bot.StartReceiving(new DefaultUpdateHandler(handler.HandleUpdateAsync, Handler.HandleErrorAsync), cancellationToken: _ct);

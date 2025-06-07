@@ -15,13 +15,13 @@ static partial class BotOnReceived
             try
             {
                 var egs = await mb.EmojiGameSessionController.StartNewSessionAsync(mb);
-                await botClient.SendTextMessageAsync(message.Chat.Id,
+                await botClient.SendMessage(message.Chat.Id,
                                                     GameD.GetPreMessage(egs.SessionState) + $"\n{mb.User.ToString()}",
                                                     replyMarkup: GameD.GetInlineKeyboardMarkup(egs.SessionState));
             }
             catch (GameException e)
             {
-                await botClient.SendTextMessageAsync(message.Chat.Id, e.Message);
+                await botClient.SendMessage(message.Chat.Id, e.Message);
             }
             return;
         }
@@ -29,17 +29,17 @@ static partial class BotOnReceived
         {
             if (await mb.EmojiGameSessionController.UpdateSessionStateAsync(mb, GameD.Constants.SessionState.ForceEnd))
             {
-                await botClient.SendTextMessageAsync(message.Chat.Id, "Game session closed.");
+                await botClient.SendMessage(message.Chat.Id, "Game session closed.");
             }
             else
             {
-                await botClient.SendTextMessageAsync(message.Chat.Id, "Not found active sessions!");
+                await botClient.SendMessage(message.Chat.Id, "Not found active sessions!");
             }
             return;
         }
         else if (message?.Text?.Contains("/dices") ?? false)
         {
-            await botClient.SendTextMessageAsync(message.Chat.Id,
+            await botClient.SendMessage(message.Chat.Id,
                                                 $"Avaliable Dices:\n{string.Join(", ", DiceD.DiceNames.Select(dn => dn.Key))}.");
             return;
         }
@@ -49,7 +49,7 @@ static partial class BotOnReceived
         {
             if (mb.ActiveSession is null)
             {
-                await botClient.SendTextMessageAsync(message.Chat.Id, $"Get {message.Dice.Value} score!", replyToMessageId: message.MessageId);
+                await botClient.SendMessage(message.Chat.Id, $"Get {message.Dice.Value} score!", replyParameters: message.MessageId);
             }
             else
             {
@@ -60,12 +60,12 @@ static partial class BotOnReceived
 
     private static async Task SendWrongMessage(ITelegramBotClient botClient, Message message, string text, int deleyToDelete = 2000)
     {
-        var sendMessage = await botClient.SendTextMessageAsync(message.Chat.Id, text, replyToMessageId: message.MessageId);
+        var sendMessage = await botClient.SendMessage(message.Chat.Id, text, replyParameters: message.MessageId);
         await Task.Run(async () =>
         {
             await Task.Delay(deleyToDelete);
-            await botClient.DeleteMessageAsync(message.Chat.Id, message.MessageId);
-            await botClient.DeleteMessageAsync(sendMessage.Chat.Id, sendMessage.MessageId);
+            await botClient.DeleteMessage(message.Chat.Id, message.MessageId);
+            await botClient.DeleteMessage(sendMessage.Chat.Id, sendMessage.MessageId);
         });
         return;
     }
@@ -76,7 +76,7 @@ static partial class BotOnReceived
         if (activeRound is null)
         {
             //game over!!!
-            await botClient.SendTextMessageAsync(message.Chat.Id, $"Something wrong, enter /stop", replyToMessageId: message.MessageId);
+            await botClient.SendMessage(message.Chat.Id, $"Something wrong, enter /stop", replyParameters: message.MessageId);
             return;
         }
 
@@ -95,20 +95,20 @@ static partial class BotOnReceived
                     var nextActiveRound = mb.ActiveSession.Rounds.FirstOrDefault(r => r.Played == false);
                     if (nextActiveRound is null)
                     {
-                        await botClient.SendTextMessageAsync(message.Chat.Id, $"Get {message.Dice.Value} score!", replyToMessageId: message.MessageId);
+                        await botClient.SendMessage(message.Chat.Id, $"Get {message.Dice.Value} score!", replyParameters: message.MessageId);
                         await mb.EmojiGameSessionController.UpdateSessionStateAsync(mb, GameD.Constants.SessionState.End);
                         var bestUser = await mb.EmojiGameSessionController.GetBestUser(mb);
                         string scoreUsers = await mb.EmojiGameSessionController.GetUsersScoreToString(mb);
-                        await botClient.SendTextMessageAsync(message.Chat.Id, $"Game end!\nWin: {bestUser.ToString()}\n{scoreUsers}");
+                        await botClient.SendMessage(message.Chat.Id, $"Game end!\nWin: {bestUser.ToString()}\n{scoreUsers}");
                     }
                     else
                     {
                         await mb.EmojiGameSessionController.SetActiveRound(mb, nextActiveRound);
-                        var botmsg = await botClient.SendTextMessageAsync(message.Chat.Id, $"Get {message.Dice.Value} score!\n\nNext {nextActiveRound.DiceMode} round!", replyToMessageId: message.MessageId);
-                        await botClient.SendDiceAsync(message.Chat.Id, DiceD.GetTelegramDice(nextActiveRound.DiceMode), replyToMessageId: botmsg.MessageId);
+                        var botmsg = await botClient.SendMessage(message.Chat.Id, $"Get {message.Dice.Value} score!\n\nNext {nextActiveRound.DiceMode} round!", replyParameters: message.MessageId);
+                        await botClient.SendDice(message.Chat.Id, DiceD.GetTelegramDice(nextActiveRound.DiceMode), replyParameters: botmsg.MessageId);
                     }
                 }else{
-                    await botClient.SendTextMessageAsync(message.Chat.Id, $"Get {message.Dice.Value} score!", replyToMessageId: message.MessageId);
+                    await botClient.SendMessage(message.Chat.Id, $"Get {message.Dice.Value} score!", replyParameters: message.MessageId);
                 }
             }
             else
@@ -134,8 +134,8 @@ static partial class BotOnReceived
     {
         if (mb.ActiveSession is null || mb.ActiveSession.InGameUsers.Count == 0)
         {
-            await botClient.AnswerCallbackQueryAsync(callbackQuery.Id, "Game isn't active.\nMessage will been deleted.\nUse `/go` for start new game.", true);
-            await botClient.DeleteMessageAsync(callbackQuery.Message.Chat.Id, callbackQuery.Message.MessageId);
+            await botClient.AnswerCallbackQuery(callbackQuery.Id, "Game isn't active.\nMessage will been deleted.\nUse `/go` for start new game.", true);
+            if(callbackQuery.Message is not null) await botClient.DeleteMessage(callbackQuery.Message.Chat.Id, callbackQuery.Message.MessageId);
             return;
         }
 
@@ -143,7 +143,8 @@ static partial class BotOnReceived
         {
             GameD.Constants.SessionState.Registration => ProcessingRegistrartionStateCallbackQuery(botClient, callbackQuery, mb),
             GameD.Constants.SessionState.SelectModes => ProcessingSelectModesStateCallbackQuery(botClient, callbackQuery, mb),
-            GameD.Constants.SessionState.Active => ProcessingActiveStateCallbackQuery(botClient, callbackQuery, mb)
+            GameD.Constants.SessionState.Active => ProcessingActiveStateCallbackQuery(botClient, callbackQuery, mb),
+            _ => throw new NotImplementedException($"Session state {mb.ActiveSession.SessionState} not implemented in callback query processing.")
         });
     }
 
@@ -153,33 +154,33 @@ static partial class BotOnReceived
         {
             if (await mb.EmojiGameSessionController.SwitchRegistrationUserInSessionAsync(mb))
             {
-                await botClient.AnswerCallbackQueryAsync(callbackQuery.Id, "You join to the game!", true);
+                await botClient.AnswerCallbackQuery(callbackQuery.Id, "You join to the game!", true);
             }
             else
             {
-                if (mb.ActiveSession.InGameUsers.Count == 0)
+                if (mb.ActiveSession?.InGameUsers.Count == 0)
                 {
                     await mb.EmojiGameSessionController.UpdateSessionStateAsync(mb, GameD.Constants.SessionState.ForceEnd);
-                    await botClient.AnswerCallbackQueryAsync(callbackQuery.Id, "Game with 0 players not supported.\nMessage will been deleted.\nUse `/go` for start new game.", true);
-                    await botClient.DeleteMessageAsync(callbackQuery.Message.Chat.Id, callbackQuery.Message.MessageId);
+                    await botClient.AnswerCallbackQuery(callbackQuery.Id, "Game with 0 players not supported.\nMessage will been deleted.\nUse `/go` for start new game.", true);
+                    if(callbackQuery.Message is not null) await botClient.DeleteMessage(callbackQuery.Message.Chat.Id, callbackQuery.Message.MessageId);
                     return;
                 }
                 else
                 {
-                    await botClient.AnswerCallbackQueryAsync(callbackQuery.Id, "You left to the game!", true);
+                    await botClient.AnswerCallbackQuery(callbackQuery.Id, "You left to the game!", true);
                 }
             }
 
-            await botClient.EditMessageTextAsync(callbackQuery.Message.Chat.Id, callbackQuery.Message.MessageId,
+            if(callbackQuery.Message is not null) await botClient.EditMessageText(callbackQuery.Message.Chat.Id, callbackQuery.Message.MessageId,
                                                     $"{GameD.GetPreMessage(mb.ActiveSession.SessionState)}\n{string.Join(", ", mb.ActiveSession.InGameUsers)}",
                                                     replyMarkup: GameD.GetInlineKeyboardMarkup(mb.ActiveSession.SessionState));
 
         }
         else if (callbackQuery.Data == GameD.Constants.GetQuery(GameD.Constants.SessionState.Next))
         {
-            if (await mb.EmojiGameSessionController.UpdateSessionStateAsync(mb, GameD.Constants.SessionState.SelectModes))
+            if (await mb.EmojiGameSessionController.UpdateSessionStateAsync(mb, GameD.Constants.SessionState.SelectModes) && callbackQuery.Message is not null)
             {
-                await botClient.EditMessageTextAsync(callbackQuery.Message.Chat.Id, callbackQuery.Message.MessageId,
+                await botClient.EditMessageText(callbackQuery.Message.Chat.Id, callbackQuery.Message.MessageId,
                                                     GameD.GetPreMessage(mb.ActiveSession.SessionState),
                                                     replyMarkup: GameD.GetInlineKeyboardMarkup(mb.ActiveSession.SessionState));
             }
@@ -191,11 +192,11 @@ static partial class BotOnReceived
         {
             await mb.EmojiGameSessionController.StartDefaultGameAsync(mb);
             var activeRound = mb.ActiveSession.Rounds.FirstOrDefault(r => r.Active == true);
-            var botmsg = await botClient.EditMessageTextAsync(callbackQuery.Message.Chat.Id, callbackQuery.Message.MessageId,
+            var botmsg = await botClient.EditMessageText(callbackQuery.Message.Chat.Id, callbackQuery.Message.MessageId,
                                                 $"Game started!\nPlay in {activeRound.DiceMode}!",
                                                 replyMarkup: null);
 
-            await botClient.SendDiceAsync(callbackQuery.Message.Chat.Id, DiceD.GetTelegramDice(activeRound.DiceMode), replyToMessageId: botmsg.MessageId);
+            await botClient.SendDice(callbackQuery.Message.Chat.Id, DiceD.GetTelegramDice(activeRound.DiceMode), replyParameters: botmsg.MessageId);
         }
     }
 
